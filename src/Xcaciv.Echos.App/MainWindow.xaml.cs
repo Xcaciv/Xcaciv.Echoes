@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Windows.Graphics;
@@ -13,6 +14,7 @@ public sealed partial class MainWindow : Window
     private readonly Func<IAudioCapture> createAudio;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(10) };
     private readonly WindowAffordances affordances;
+    private readonly ILogger<MainWindow> logger;
     private CancellationTokenSource cycleCancellation = new();
     private Task activeCycle = Task.CompletedTask;
     private Task audioLifecycle = Task.CompletedTask;
@@ -27,12 +29,13 @@ public sealed partial class MainWindow : Window
     public event EventHandler? ExitRequested;
 
     public MainWindow(CaptureConsent consent, AppConfiguration configuration, Func<IContextEngine> createEngine,
-        Func<IAudioCapture> createAudio)
+        Func<IAudioCapture> createAudio, ILogger<MainWindow> logger)
     {
         this.consent = consent;
         this.configuration = configuration;
         this.createEngine = createEngine;
         this.createAudio = createAudio;
+        this.logger = logger;
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(DragRegion);
@@ -69,28 +72,49 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnConsentChanged(object sender, RoutedEventArgs args)
+    private void OnConsentChanged(object sender, RoutedEventArgs args) => ApplyConsentState(fromToggles: true);
+
+    private void OnCaptureConsentChanged(object? sender, EventArgs args)
     {
-        if (!ready || IsStopping)
+        // Our own toggle application raises Changed synchronously on the UI thread; ApplyConsentState handles it.
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            if (!applyingConsent)
+                ApplyConsentState(fromToggles: false);
+        }
+        else
+        {
+            DispatcherQueue.TryEnqueue(() => ApplyConsentState(fromToggles: false));
+        }
+    }
+
+    // UI thread only. Single owner of cycleCancellation, consentVersion, the timer and audio scheduling.
+    private void ApplyConsentState(bool fromToggles)
+    {
+        if (IsStopping || (fromToggles && !ready))
             return;
+        Interlocked.Increment(ref consentVersion);
         var previousCancellation = cycleCancellation;
         previousCancellation.Cancel();
         SuggestionText.Text = string.Empty;
 
-        applyingConsent = true;
-        try
+        if (fromToggles)
         {
-            consent.IsScreenEnabled = ScreenToggle.IsOn;
-            consent.IsAudioEnabled = AudioToggle.IsOn && configuration.HasTranscriptionConfiguration;
-            consent.IsObservationEnabled = ObservationToggle.IsOn && configuration.HasLlmConfiguration;
-        }
-        finally
-        {
-            applyingConsent = false;
+            applyingConsent = true;
+            try
+            {
+                consent.IsScreenEnabled = ScreenToggle.IsOn;
+                consent.IsAudioEnabled = AudioToggle.IsOn && configuration.HasTranscriptionConfiguration;
+                consent.IsObservationEnabled = ObservationToggle.IsOn && configuration.HasLlmConfiguration;
+            }
+            finally
+            {
+                applyingConsent = false;
+            }
         }
         cycleCancellation = new CancellationTokenSource();
         _ = DisposeAfterCycleAsync(previousCancellation, Task.WhenAll(activeCycle, audioLifecycle));
-        if (consent.IsObservationEnabled)
+        if (fromToggles && consent.IsObservationEnabled)
         {
             StatusText.Text = "Observation enabled. Waiting for the next 10-second cycle.";
             timer.Start();
@@ -98,38 +122,11 @@ public sealed partial class MainWindow : Window
         else
         {
             timer.Stop();
-            StatusText.Text = "Observation is off. No collection or network requests.";
+            StatusText.Text = fromToggles
+                ? "Observation is off. No collection or network requests."
+                : "Consent changed. Observation paused; use the switches to resume.";
         }
         audioLifecycle = SynchronizeAudioAsync(audioLifecycle, cycleCancellation.Token);
-    }
-
-    private void OnCaptureConsentChanged(object? sender, EventArgs args)
-    {
-        var version = Interlocked.Increment(ref consentVersion);
-        try
-        {
-            Volatile.Read(ref cycleCancellation).Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        void ClearRevokedContext()
-        {
-            if (IsStopping || Interlocked.Read(ref consentVersion) != version)
-                return;
-            SuggestionText.Text = string.Empty;
-            if (!applyingConsent)
-            {
-                cycleCancellation.Cancel();
-                timer.Stop();
-                StatusText.Text = "Consent changed. Observation paused; use the switches to resume.";
-                audioLifecycle = SynchronizeAudioAsync(audioLifecycle, cycleCancellation.Token);
-            }
-        }
-        if (DispatcherQueue.HasThreadAccess)
-            ClearRevokedContext();
-        else
-            DispatcherQueue.TryEnqueue(ClearRevokedContext);
     }
 
     private async Task SynchronizeAudioAsync(Task previous, CancellationToken token)
@@ -148,9 +145,11 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+            // Cancellation is the expected result of a consent change or shutdown.
         }
         catch (Exception error)
         {
+            logger.LogWarning(error, "Audio start failed");
             if (!token.IsCancellationRequested && !IsStopping)
                 StatusText.Text = $"Audio unavailable ({error.GetType().Name}). Disable audio or check the playback device.";
         }
@@ -183,22 +182,22 @@ public sealed partial class MainWindow : Window
             var activeEngine = engine ??= createEngine();
             var suggestion = await Task.Run(() => activeEngine.GetSuggestionAsync(token), token);
             var body = suggestion?.Body;
-            lock (consent)
-            {
-                if (token.IsCancellationRequested || IsStopping ||
-                    version != Interlocked.Read(ref consentVersion) || !consent.IsObservationEnabled)
-                    return;
-                SuggestionText.Text = string.IsNullOrWhiteSpace(body)
-                    ? "No suggestion for this context."
-                    : body;
-                StatusText.Text = "Updated. Checking every 10 seconds while observation is enabled.";
-            }
+            // Continuation resumes on the UI thread, so the check and UI update cannot interleave with consent changes.
+            if (token.IsCancellationRequested || IsStopping ||
+                version != Interlocked.Read(ref consentVersion) || !consent.IsObservationEnabled)
+                return;
+            SuggestionText.Text = string.IsNullOrWhiteSpace(body)
+                ? "No suggestion for this context."
+                : body;
+            StatusText.Text = "Updated. Checking every 10 seconds while observation is enabled.";
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+            // Cancellation is the expected result of a consent change or shutdown.
         }
         catch (Exception error)
         {
+            logger.LogWarning(error, "Observation cycle failed");
             if (!token.IsCancellationRequested && !IsStopping && version == Interlocked.Read(ref consentVersion))
             {
                 StatusText.Text = $"Observation failed ({error.GetType().Name}). Check endpoint configuration, permissions, and connectivity. Retrying next cycle.";
@@ -208,7 +207,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    public async Task StopAsync()
+    public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (IsStopping)
             return;
@@ -227,7 +226,7 @@ public sealed partial class MainWindow : Window
         AudioToggle.IsEnabled = false;
         StatusText.Text = "Stopping capture and pending requests…";
         affordances.Dispose();
-        await Task.WhenAll(activeCycle, audioLifecycle);
+        await Task.WhenAll(activeCycle, audioLifecycle).WaitAsync(cancellationToken);
         if (audio is not null)
             await audio.StopAsync();
         cycleCancellation.Dispose();

@@ -21,16 +21,7 @@ public sealed class WhisperTranscriptionEngine : ITranscriptionEngine
     {
         this.client = client ?? throw new ArgumentNullException(nameof(client));
         this.options = options ?? throw new ArgumentNullException(nameof(options));
-        if (options.Endpoint is null || !options.Endpoint.IsAbsoluteUri ||
-            !(options.Endpoint.Scheme == Uri.UriSchemeHttps ||
-              options.AllowInsecureLoopback && options.Endpoint.IsLoopback && options.Endpoint.Scheme == Uri.UriSchemeHttp) ||
-            !string.IsNullOrEmpty(options.Endpoint.UserInfo) || !string.IsNullOrEmpty(options.Endpoint.Fragment))
-            throw new ArgumentException("An explicit HTTPS endpoint (or opted-in HTTP loopback endpoint) is required.", nameof(options));
-        if (string.IsNullOrWhiteSpace(options.Model) || options.Model.Length > 200 ||
-            options.MaximumAudioBytes <= 0 || options.MaximumAudioBytes > 100 * 1024 * 1024 ||
-            options.MaximumResponseBytes <= 0 || options.MaximumResponseBytes > 10 * 1024 * 1024 ||
-            options.RequestTimeout <= TimeSpan.Zero || options.RequestTimeout > TimeSpan.FromMinutes(10))
-            throw new ArgumentOutOfRangeException(nameof(options));
+        options.Validate();
     }
 
     public async Task<IReadOnlyList<AudioTranscriptSegment>> TranscribeAsync(

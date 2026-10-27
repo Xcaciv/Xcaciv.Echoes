@@ -5,8 +5,14 @@ using Xcaciv.Echos.Core;
 
 namespace Xcaciv.Echos.Llm;
 
+/// <summary>
+/// Sends the prompt to a chat-completions endpoint with an optional bearer token.
+/// The caller owns HttpClient and should disable automatic redirects on its handler;
+/// redirected responses are rejected here regardless. Timeouts come from <see cref="LlmOptions.RequestTimeout"/>.
+/// </summary>
 public sealed class HttpLlmClient : ILlmClient
 {
+    private readonly TimeSpan _requestTimeout;
     private readonly HttpClient _client;
     private readonly Uri _endpoint;
     private readonly string _model;
@@ -23,6 +29,7 @@ public sealed class HttpLlmClient : ILlmClient
         _model = options.Model;
         _apiKey = options.ApiKey;
         _maximumResponseBytes = options.MaximumResponseBytes;
+        _requestTimeout = options.RequestTimeout;
     }
 
     public async Task<LlmResult> CompleteAsync(LlmRequest request, CancellationToken ct = default)
@@ -31,8 +38,7 @@ public sealed class HttpLlmClient : ILlmClient
         ArgumentNullException.ThrowIfNull(request.Prompt);
         ct.ThrowIfCancellationRequested();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (_client.Timeout != Timeout.InfiniteTimeSpan)
-            timeout.CancelAfter(_client.Timeout);
+        timeout.CancelAfter(_requestTimeout);
         var token = timeout.Token;
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _endpoint);
         if (!string.IsNullOrWhiteSpace(_apiKey))
@@ -44,6 +50,10 @@ public sealed class HttpLlmClient : ILlmClient
         });
         using var response = await _client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead,
             token).ConfigureAwait(false);
+        var responseUri = response.RequestMessage?.RequestUri;
+        if (((int)response.StatusCode >= 300 && (int)response.StatusCode < 400) ||
+            (responseUri is not null && responseUri != _endpoint))
+            throw new InvalidOperationException("The LLM endpoint redirected the request.");
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength > _maximumResponseBytes)
             throw new InvalidDataException("The LLM response exceeds the configured limit.");

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using Xcaciv.Echos.Core;
@@ -46,7 +47,7 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             {
                 ValidateFormat(capture.WaveFormat);
                 capture.StartRecording();
-                session.Cancellation = cancellationToken.Register(() => { _ = StopAsync(); });
+                session.Cancellation = cancellationToken.Register(RequestStopOnCancellation);
             }
             catch
             {
@@ -71,6 +72,20 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             // Never dispose a cancellation registration while holding gate: its callback
             // may itself be waiting to enter StopAsync.
             return session.StopTask = Task.Run(() => FinishStopAsync(session));
+        }
+    }
+
+    private void RequestStopOnCancellation()
+    {
+        try
+        {
+            // Fire and forget: the stop task is observed by whoever calls StopAsync/Dispose.
+            _ = StopAsync();
+        }
+        catch (Exception error) when (error is InvalidOperationException or COMException or ObjectDisposedException)
+        {
+            // The device may already be gone or stopping; cancellation must not throw into the canceller.
+            LastError = error;
         }
     }
 
@@ -119,7 +134,20 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             throw new InvalidOperationException("Dispose cannot run inside an audio callback; use StopAsync and dispose from the owner.");
         lock (gate)
             disposed = true;
-        StopAsync().GetAwaiter().GetResult();
+        // StopAsync only signals the device to stop under the gate; the native teardown runs on a
+        // thread-pool task (Task.Run + ConfigureAwait(false)) and the capture was created with no
+        // SynchronizationContext, so RecordingStopped is never posted back to the caller's context.
+        // Waiting here therefore cannot deadlock on a UI thread, but the wait is bounded as a safeguard.
+        var stop = StopAsync();
+        try
+        {
+            if (!stop.Wait(TimeSpan.FromSeconds(5)))
+                LastError = new TimeoutException("Audio capture did not stop within the dispose timeout.");
+        }
+        catch (AggregateException error)
+        {
+            LastError = error.GetBaseException();
+        }
         GC.SuppressFinalize(this);
     }
 
@@ -174,7 +202,10 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             foreach (EventHandler<AudioChunkEventArgs> handler in handlers.GetInvocationList())
             {
                 try { handler(this, chunk); }
-                catch { /* A subscriber must not terminate the audio capture thread. */ }
+                catch (Exception handlerError) when (handlerError is not (OutOfMemoryException or AccessViolationException))
+                {
+                    // A subscriber must not terminate the audio capture thread; fatal runtime errors are not caught.
+                }
             }
         }
         catch (Exception error)

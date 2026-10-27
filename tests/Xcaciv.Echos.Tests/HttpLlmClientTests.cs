@@ -58,12 +58,9 @@ public sealed class HttpLlmClientTests
     {
         var stream = new CancellationBlockingStream();
         using var http = new HttpClient(new StubHttpMessageHandler((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) })))
-        {
-            Timeout = TimeSpan.FromMilliseconds(100)
-        };
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) })));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            Create(http).CompleteAsync(new LlmRequest("question")).WaitAsync(TimeSpan.FromSeconds(5)));
+            Create(http, TimeSpan.FromMilliseconds(100)).CompleteAsync(new LlmRequest("question")).WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.True(stream.IsDisposed);
     }
 
@@ -89,8 +86,35 @@ public sealed class HttpLlmClientTests
         Assert.False(stream.CanRead);
     }
 
-    private static HttpLlmClient Create(HttpClient http) => new(http, new LlmOptions
+    [Fact]
+    public async Task RejectsRedirectStatusBeforeReadingBody()
     {
+        var body = new TrackingHttpContent("{}");
+        using var http = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.Found) { Content = body })));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Create(http).CompleteAsync(new LlmRequest("question")));
+        Assert.Equal("The LLM endpoint redirected the request.", ex.Message);
+        Assert.True(body.IsDisposed);
+    }
+
+    [Fact]
+    public async Task RejectsResponseFromDifferentUri()
+    {
+        using var http = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[]}"),
+                RequestMessage = new HttpRequestMessage(HttpMethod.Post, "https://other.invalid/v1/chat/completions")
+            })));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Create(http).CompleteAsync(new LlmRequest("question")));
+        Assert.Equal("The LLM endpoint redirected the request.", ex.Message);
+    }
+
+    private static HttpLlmClient Create(HttpClient http, TimeSpan? timeout = null) => new(http, new LlmOptions
+    {
+        RequestTimeout = timeout ?? TimeSpan.FromSeconds(45),
         Endpoint = new Uri("https://example.invalid/v1/chat/completions"),
         Model = "test-model",
         ApiKey = "test-placeholder"

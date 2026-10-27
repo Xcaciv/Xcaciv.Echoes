@@ -86,6 +86,34 @@ public sealed class ContextEngineTests
     }
 
     [Fact]
+    public async Task TogglingConsentWhileInspectorIsBlockedDoesNotDeadlock()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        sources.Snapshot = () =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+            return new UiSnapshot("app", "window", Array.Empty<string>());
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var toggle = Task.Run(() =>
+        {
+            consent.IsAudioEnabled = true;
+            consent.IsObservationEnabled = false;
+        });
+        var finished = await Task.WhenAny(toggle, Task.Delay(TimeSpan.FromSeconds(5))) == toggle;
+        release.Set();
+        Assert.True(finished, "Consent toggle was blocked by the inspector call.");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Equal(0, sources.Completions);
+    }
+
+    [Fact]
     public async Task CancellationAfterInspectionPreventsSendingAndPrecancelledCallsDoNotInspect()
     {
         var sources = new ContextSources();

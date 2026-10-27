@@ -12,6 +12,8 @@ public static class PromptBuilder
     public const int MaximumElementCharacters = 200;
     public const int MaximumScreenCharacters = 4000;
     public const int MaximumAudioCharacters = 2000;
+    public const int MaximumPromptCharacters = 24000;
+    private const string TruncationMarker = "\n[truncated]\n";
 
     public static string Build(ContextSnapshot snapshot)
     {
@@ -33,6 +35,12 @@ public static class PromptBuilder
         foreach (var segment in snapshot.Audio.TakeLast(MaximumAudioSegments))
             prompt.Append('[').Append(segment.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture))
                 .Append("] ").AppendLine(Limit(segment.Text, MaximumAudioCharacters));
+        // The preamble is far shorter than the cap, so truncating the tail never removes the untrusted-content warning.
+        if (prompt.Length > MaximumPromptCharacters)
+        {
+            prompt.Length = MaximumPromptCharacters - TruncationMarker.Length;
+            prompt.Append(TruncationMarker);
+        }
         return prompt.ToString();
     }
 

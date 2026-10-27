@@ -11,7 +11,7 @@ The solution is `src/Xcaciv.Echos.sln`, with one type per source file:
 | Project | Responsibility |
 | --- | --- |
 | `Xcaciv.Echos.Core` | Capture/LLM/context interfaces, records, consent, configuration |
-| `Xcaciv.Echos.Capture` | Windows screen, OCR, audio, UI Automation and input adapters |
+| `Xcaciv.Echos.Capture` | Windows screen, OCR, audio, UI Automation and transcription adapters |
 | `Xcaciv.Echos.Context` | Bounded context aggregation and prompt shaping |
 | `Xcaciv.Echos.Llm` | Configurable OpenAI-compatible HTTP completions |
 | `Xcaciv.Echos.App` | WinUI 3 floating window, consent controls, service composition |
@@ -20,7 +20,6 @@ Core has no dependency on the implementation projects. Context, Capture, and Llm
 depend on Core; App composes them. `IOcrEngine` and `ITranscriptionEngine` belong
 to Core so Context does not depend on Windows implementations. `Bootstrapper`
 belongs to App: putting it in Core would introduce circular project references.
-Input event arguments are Echos-owned models rather than WinForms UI types.
 
 ## Suggestion flow
 
@@ -49,8 +48,7 @@ Captured text is untrusted context, not instructions for the assistant.
   according to its own policy. Select endpoints you trust.
 - Revocation cancels pending work and clears retained context. Data already sent
   to an endpoint cannot be recalled.
-- Input hooks are an explicit adapter, not a default background keylogger.
-  Do not use them to retain typed text or credentials.
+- Echos has no global input hooks; adding one requires consent gating and disclosure.
 
 ## Platform validation
 
@@ -84,5 +82,5 @@ is bundled.
    consent state should appear. Disable observation and verify recording stops.
 6. Exercise dragging, always-on-top behavior, Ctrl+Shift+E, and the tray icon.
    Hiding is not the same as disabling observation.
-7. Exit while a request is pending. Verify the process exits, hooks and audio
+7. Exit while a request is pending. Verify the process exits, audio
    devices are released, and the tray icon disappears.

@@ -7,6 +7,8 @@ public sealed class LlmOptions
     public string? ApiKey { get; set; }
     public int MaximumResponseBytes { get; set; } = 1024 * 1024;
 
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(45);
+
     public void Validate()
     {
         if (Endpoint is null || !Endpoint.IsAbsoluteUri ||
@@ -22,5 +24,7 @@ public sealed class LlmOptions
             throw new ArgumentException("The API key must not contain line breaks.", nameof(ApiKey));
         if (MaximumResponseBytes <= 0 || MaximumResponseBytes > 10 * 1024 * 1024)
             throw new ArgumentOutOfRangeException(nameof(MaximumResponseBytes));
+        if (RequestTimeout <= TimeSpan.Zero || RequestTimeout > TimeSpan.FromMinutes(10))
+            throw new ArgumentOutOfRangeException(nameof(RequestTimeout));
     }
 }

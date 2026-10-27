@@ -13,8 +13,11 @@ public sealed class ContextEngine : IContextEngine, IDisposable
     private readonly ITranscriptionEngine _transcription;
     private readonly ILlmClient _llm;
     private readonly CaptureConsent _consent;
+    // Lock order: CaptureConsent's private lock, then _gate. Never take consent state while holding _gate.
+    private readonly object _gate = new();
     private readonly Queue<AudioChunkEventArgs> _chunks = new();
     private CancellationTokenSource _epoch = new();
+    private int _generation;
     private int _bufferBytes;
     private int _sampleRate;
     private int _channels;
@@ -34,7 +37,7 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         _consent.Changed += OnConsentChanged;
     }
 
-    public int BufferedAudioBytes { get { lock (_consent) return _bufferBytes; } }
+    public int BufferedAudioBytes { get { lock (_gate) return _bufferBytes; } }
 
     public async Task<AssistantSuggestion?> GetSuggestionAsync(CancellationToken ct = default)
     {
@@ -60,23 +63,32 @@ public sealed class ContextEngine : IContextEngine, IDisposable
     private CancellationTokenSource? CreateCycle(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_consent)
+        ThrowIfDisposed();
+        CancellationTokenSource? cycle = null;
+        _consent.TryStart(false, false, () =>
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            return _consent.IsObservationEnabled
-                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _epoch.Token)
-                : null;
-        }
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                cycle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _epoch.Token);
+            }
+        });
+        return cycle;
+    }
+
+    private void ThrowIfDisposed()
+    {
+        lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
     private async Task<ContextSnapshot> GatherCoreAsync(CancellationToken token)
     {
-        var ui = await StartAuthorized(() => Task.FromResult(_inspector.GetCurrentSnapshot()), token).ConfigureAwait(false);
+        // UI Automation is synchronous and may be slow: run it on the pool, never inside a lock.
+        var ui = await StartAuthorized(() => Task.Run(() => _inspector.GetCurrentSnapshot(), token), token)
+            .ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
         IReadOnlyList<ScreenTextRegion> screenText = Array.Empty<ScreenTextRegion>();
-        bool screenEnabled;
-        lock (_consent) screenEnabled = _consent.IsScreenEnabled;
-        if (screenEnabled)
+        if (_consent.GetFlags().Screen)
         {
             if (!OperatingSystem.IsWindowsVersionAtLeast(6, 1))
                 throw new PlatformNotSupportedException("Screen bitmap capture requires Windows.");
@@ -86,12 +98,9 @@ public sealed class ContextEngine : IContextEngine, IDisposable
                 .ConfigureAwait(false);
         }
         IReadOnlyList<AudioTranscriptSegment> transcript = Array.Empty<AudioTranscriptSegment>();
-        IReadOnlyList<AudioChunkEventArgs> audioData;
-        lock (_consent)
-        {
-            token.ThrowIfCancellationRequested();
-            audioData = _consent.IsAudioEnabled ? DrainAudio() : Array.Empty<AudioChunkEventArgs>();
-        }
+        IReadOnlyList<AudioChunkEventArgs> audioData = Array.Empty<AudioChunkEventArgs>();
+        token.ThrowIfCancellationRequested();
+        _consent.TryStart(false, true, () => audioData = DrainAudio());
         try
         {
             if (audioData.Count > 0)
@@ -108,24 +117,34 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         return new ContextSnapshot(ui, transcript, screenText, DateTimeOffset.UtcNow);
     }
 
-    // Starting each operation while holding the consent lock closes the check/send revocation race.
+    // The check and the (quick) start happen atomically inside CaptureConsent.TryStart, which closes the
+    // check/send revocation race. Changed is raised after consent state is updated, so anything started between
+    // the update and the epoch cancel is rejected here.
     private Task<T> StartAuthorized<T>(Func<Task<T>> start, CancellationToken token, bool screen = false, bool audio = false)
     {
-        lock (_consent)
+        token.ThrowIfCancellationRequested();
+        Task<T>? started = null;
+        var authorized = _consent.TryStart(screen, audio, () =>
         {
             token.ThrowIfCancellationRequested();
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!_consent.IsObservationEnabled || screen && !_consent.IsScreenEnabled || audio && !_consent.IsAudioEnabled)
-                throw new OperationCanceledException("Capture consent was revoked.", token);
-            return start();
-        }
+            ThrowIfDisposed();
+            started = start();
+        });
+        if (!authorized)
+            throw new OperationCanceledException("Capture consent was revoked.", token);
+        return started!;
     }
 
     private void OnAudioChunk(object? sender, AudioChunkEventArgs chunk)
     {
-        lock (_consent)
+        // Read consent before taking _gate; a generation bump (consent changed meanwhile) drops the chunk.
+        var generation = Volatile.Read(ref _generation);
+        var flags = _consent.GetFlags();
+        if (!flags.Observation || !flags.Audio)
+            return;
+        lock (_gate)
         {
-            if (_disposed || !_consent.IsObservationEnabled || !_consent.IsAudioEnabled ||
+            if (_disposed || generation != _generation ||
                 chunk.SampleRate <= 0 || chunk.Channels <= 0 || chunk.Channels > 8)
                 return;
             var alignment = chunk.Channels * 2;
@@ -151,12 +170,18 @@ public sealed class ContextEngine : IContextEngine, IDisposable
 
     private IReadOnlyList<AudioChunkEventArgs> DrainAudio()
     {
-        var result = _chunks.Select(chunk =>
-            new AudioChunkEventArgs(chunk.Buffer, chunk.SampleRate, chunk.Channels)).ToArray();
-        ClearAudio();
-        return result;
+        lock (_gate)
+        {
+            var result = _chunks.Select(chunk =>
+                new AudioChunkEventArgs(chunk.Buffer, chunk.SampleRate, chunk.Channels)).ToArray();
+            // Buffers are now owned by the caller; drop references without clearing them.
+            _chunks.Clear();
+            _bufferBytes = 0;
+            return result;
+        }
     }
 
+    // Caller must hold _gate.
     private void ClearAudio()
     {
         while (_chunks.Count > 0)
@@ -166,28 +191,36 @@ public sealed class ContextEngine : IContextEngine, IDisposable
 
     private void OnConsentChanged(object? sender, EventArgs args)
     {
-        lock (_consent)
+        var flags = _consent.GetFlags();
+        CancellationTokenSource previous;
+        lock (_gate)
         {
-            var previous = _epoch;
+            if (_disposed) return;
+            previous = _epoch;
             _epoch = new CancellationTokenSource();
-            previous.Cancel();
-            previous.Dispose();
-            if (!_consent.IsObservationEnabled || !_consent.IsAudioEnabled)
+            _generation++;
+            if (!flags.Observation || !flags.Audio)
                 ClearAudio();
         }
+        // Cancel outside the lock: registered callbacks are arbitrary code.
+        try { previous.Cancel(); }
+        finally { previous.Dispose(); }
     }
 
     public void Dispose()
     {
-        lock (_consent)
+        CancellationTokenSource epoch;
+        lock (_gate)
         {
             if (_disposed) return;
             _disposed = true;
+            _generation++;
             _audio.AudioChunkCaptured -= OnAudioChunk;
             _consent.Changed -= OnConsentChanged;
             ClearAudio();
-            _epoch.Cancel();
-            _epoch.Dispose();
+            epoch = _epoch;
         }
+        try { epoch.Cancel(); }
+        finally { epoch.Dispose(); }
     }
 }
