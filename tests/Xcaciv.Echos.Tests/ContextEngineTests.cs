@@ -185,6 +185,55 @@ public sealed class ContextEngineTests
         Assert.Equal(0, sources.Completions);
     }
 
+    [WindowsFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows6.1")]
+    public async Task TogglingConsentWhileScreenCaptureIsBlockedDoesNotDeadlock()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(6, 1)) return;
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true, IsScreenEnabled = true };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        sources.Capture = _ =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+            return Task.FromResult(new Bitmap(1, 1));
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var toggle = Task.Run(() => consent.IsScreenEnabled = false);
+        var finished = await Task.WhenAny(toggle, Task.Delay(TimeSpan.FromSeconds(5))) == toggle;
+        release.Set();
+        Assert.True(finished, "Consent toggle was blocked by screen capture.");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+    }
+
+    [WindowsFact]
+    public async Task TogglingConsentWhileOcrIsBlockedDoesNotDeadlock()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(6, 1)) return;
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true, IsScreenEnabled = true };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        sources.Ocr = (_, _) =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+            return Task.FromResult<IReadOnlyList<ScreenTextRegion>>(Array.Empty<ScreenTextRegion>());
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var toggle = Task.Run(() => consent.IsScreenEnabled = false);
+        var finished = await Task.WhenAny(toggle, Task.Delay(TimeSpan.FromSeconds(5))) == toggle;
+        release.Set();
+        Assert.True(finished, "Consent toggle was blocked by OCR.");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+    }
+
     [Fact]
     public async Task CancellationAfterInspectionPreventsSendingAndPrecancelledCallsDoNotInspect()
     {
@@ -236,6 +285,46 @@ public sealed class ContextEngineTests
         };
         using var engine = Create(sources, consent);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.GetSuggestionAsync());
+    }
+
+    [Fact]
+    public async Task DelayedConsentNotificationPreventsReturningCompletedStaleSuggestion()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true };
+        using var completionEntered = new ManualResetEventSlim();
+        using var releaseCompletion = new ManualResetEventSlim();
+        using var notificationEntered = new ManualResetEventSlim();
+        using var releaseNotification = new ManualResetEventSlim();
+        consent.Changed += (_, _) =>
+        {
+            if (!consent.IsObservationEnabled)
+            {
+                notificationEntered.Set();
+                releaseNotification.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+        sources.Complete = _ =>
+        {
+            completionEntered.Set();
+            releaseCompletion.Wait(TimeSpan.FromSeconds(10));
+            return Task.FromResult(new LlmResult("stale"));
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(completionEntered.Wait(TimeSpan.FromSeconds(5)));
+        var revocation = Task.Run(() => consent.IsObservationEnabled = false);
+        Assert.True(notificationEntered.Wait(TimeSpan.FromSeconds(5)));
+        releaseCompletion.Set();
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        }
+        finally
+        {
+            releaseNotification.Set();
+            await revocation;
+        }
     }
 
     [Fact]

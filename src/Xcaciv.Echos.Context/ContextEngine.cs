@@ -49,6 +49,7 @@ public sealed class ContextEngine : IContextEngine, IDisposable
             () => _llm.CompleteAsync(new LlmRequest(PromptBuilder.Build(snapshot)), linked.Token),
             linked.Token, revision).ConfigureAwait(false);
         linked.Token.ThrowIfCancellationRequested();
+        EnsureRevision(revision, linked.Token);
         return string.IsNullOrWhiteSpace(result.Text) ? null : new AssistantSuggestion("Suggestion", result.Text, null);
     }
 
@@ -85,8 +86,7 @@ public sealed class ContextEngine : IContextEngine, IDisposable
 
     private async Task<ContextSnapshot> GatherCoreAsync(CancellationToken token, long revision)
     {
-        // UI Automation is synchronous and may be slow: run it on the pool, never inside a lock.
-        var ui = await StartAuthorized(() => Task.Run(() => _inspector.GetCurrentSnapshot(), token), token, revision)
+        var ui = await StartAuthorized(() => Task.FromResult(_inspector.GetCurrentSnapshot()), token, revision)
             .ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
         IReadOnlyList<ScreenTextRegion> screenText = Array.Empty<ScreenTextRegion>();
@@ -122,9 +122,8 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         return new ContextSnapshot(ui, transcript, screenText, DateTimeOffset.UtcNow);
     }
 
-    // The check and the (quick) start happen atomically inside CaptureConsent.TryStart, which closes the
-    // check/send revocation race. Changed is raised after consent state is updated, so anything started between
-    // the update and the epoch cancel is rejected here.
+    // The consent check and worker handoff happen atomically; the worker rechecks revision and flags immediately
+    // before invoking the adapter. Changed is raised after consent state is updated, so stale handoffs are rejected.
     private Task<T> StartAuthorized<T>(Func<Task<T>> start, CancellationToken token, long revision,
         bool screen = false, bool audio = false)
     {
@@ -134,11 +133,23 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         {
             token.ThrowIfCancellationRequested();
             ThrowIfDisposed();
-            started = start();
+            started = Task.Run(async () =>
+            {
+                EnsureAuthorized(revision, token, screen, audio);
+                token.ThrowIfCancellationRequested();
+                ThrowIfDisposed();
+                return await start().ConfigureAwait(false);
+            }, token);
         });
         if (!authorized)
             throw new OperationCanceledException("Capture consent was revoked.", token);
         return started!;
+    }
+
+    private void EnsureAuthorized(long revision, CancellationToken token, bool screen, bool audio)
+    {
+        if (!_consent.TryStart(revision, screen, audio, static () => { }))
+            throw new OperationCanceledException("Capture consent changed.", token);
     }
 
     private void EnsureRevision(long revision, CancellationToken token)

@@ -8,6 +8,7 @@ namespace Xcaciv.Echos.App;
 
 public sealed partial class MainWindow : Window
 {
+    private static readonly TimeSpan ShutdownWait = TimeSpan.FromSeconds(3);
     private readonly CaptureConsent consent;
     private readonly AppConfiguration configuration;
     private readonly Func<IContextEngine> createEngine;
@@ -19,6 +20,7 @@ public sealed partial class MainWindow : Window
     private CancellationTokenSource cycleCancellation = new();
     private Task activeCycle = Task.CompletedTask;
     private Task audioLifecycle = Task.CompletedTask;
+    private Task lateShutdownWork = Task.CompletedTask;
     private Task? stopTask;
     private IContextEngine? engine;
     private IAudioCapture? audio;
@@ -29,6 +31,7 @@ public sealed partial class MainWindow : Window
 
     public bool IsStopping { get; private set; }
     public event EventHandler? ExitRequested;
+    internal Task LateShutdownWork => lateShutdownWork;
 
     public MainWindow(CaptureConsent consent, AppConfiguration configuration, Func<IContextEngine> createEngine,
         Func<IAudioCapture> createAudio, ILogger<MainWindow> logger)
@@ -155,6 +158,8 @@ public sealed partial class MainWindow : Window
                 return;
             engine ??= createEngine();
             audio ??= createAudio();
+            audio.CaptureFailed -= OnAudioCaptureFailed;
+            audio.CaptureFailed += OnAudioCaptureFailed;
             await audio.StartAsync(token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -169,11 +174,31 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void OnAudioCaptureFailed(object? sender, AudioCaptureFailedEventArgs args)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (IsStopping || !ReferenceEquals(sender, audio))
+                return;
+            if (audio is not null)
+                audio.CaptureFailed -= OnAudioCaptureFailed;
+            logger.LogWarning("Audio capture failed ({ExceptionType})", args.Error.GetType().Name);
+            AudioToggle.IsOn = false;
+            if (consent.IsAudioEnabled)
+                consent.IsAudioEnabled = false;
+            StatusText.Text = $"Audio capture failed ({args.Error.GetType().Name}). Audio observation was disabled.";
+        });
+    }
+
     private async Task DisposeAfterCycleAsync(CancellationTokenSource cancellation, Task cycle)
     {
         try
         {
             await cycle;
+        }
+        catch (Exception error)
+        {
+            logger.LogWarning("Late shutdown work failed ({ExceptionType})", error.GetType().Name);
         }
         finally
         {
@@ -234,6 +259,8 @@ public sealed partial class MainWindow : Window
             timer.Stop();
             timer.Tick -= OnTick;
             consent.Changed -= OnCaptureConsentChanged;
+            if (audio is not null)
+                audio.CaptureFailed -= OnAudioCaptureFailed;
             InvalidateCycle();
             consent.IsObservationEnabled = false;
             consent.IsScreenEnabled = false;
@@ -251,21 +278,48 @@ public sealed partial class MainWindow : Window
 
     private async Task CompleteStopAsync()
     {
+        var pending = Task.WhenAll(activeCycle, audioLifecycle);
         try
         {
-            await Task.WhenAll(activeCycle, audioLifecycle);
+            await pending.WaitAsync(ShutdownWait);
+        }
+        catch (TimeoutException)
+        {
+            logger.LogWarning("Shutdown continued with an observation cycle still running");
+        }
+        catch (Exception error)
+        {
+            logger.LogWarning("Pending shutdown work failed ({ExceptionType})", error.GetType().Name);
+        }
+
+        try
+        {
+            if (audio is not null)
+            {
+                var stoppingAudio = audio.StopAsync();
+                pending = Task.WhenAll(pending, stoppingAudio);
+                try
+                {
+                    await stoppingAudio.WaitAsync(ShutdownWait);
+                }
+                catch (TimeoutException)
+                {
+                    logger.LogWarning("Shutdown continued while audio capture was still stopping");
+                }
+                catch (Exception error)
+                {
+                    logger.LogWarning("Audio shutdown failed ({ExceptionType})", error.GetType().Name);
+                }
+            }
         }
         finally
         {
-            try
+            if (pending.IsCompleted)
+                cycleCancellation.Dispose();
+            else
             {
-                if (audio is not null)
-                    await audio.StopAsync();
-            }
-            finally
-            {
-                lock (cycleGate)
-                    cycleCancellation.Dispose();
+                lateShutdownWork = pending;
+                _ = DisposeAfterCycleAsync(cycleCancellation, pending);
             }
         }
     }

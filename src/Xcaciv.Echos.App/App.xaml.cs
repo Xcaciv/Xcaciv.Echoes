@@ -47,7 +47,15 @@ public sealed partial class App : Application
             finally
             {
                 if (services is not null)
-                    await services.DisposeAsync();
+                {
+                    var provider = services;
+                    services = null;
+                    var pending = window.LateShutdownWork;
+                    if (pending.IsCompleted)
+                        await provider.DisposeAsync();
+                    else
+                        _ = DisposeServicesAfterWorkAsync(provider, pending);
+                }
             }
         }
         catch (Exception error)
@@ -60,6 +68,26 @@ public sealed partial class App : Application
             shutdownComplete = true;
             window.Close();
             window = null;
+        }
+    }
+
+    private static async Task DisposeServicesAfterWorkAsync(ServiceProvider provider, Task pending)
+    {
+        try
+        {
+            await pending.ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Trace.WriteLine($"Echos late shutdown: {error.GetType().Name}");
+        }
+        try
+        {
+            await provider.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Trace.WriteLine($"Echos disposal: {error.GetType().Name}");
         }
     }
 }

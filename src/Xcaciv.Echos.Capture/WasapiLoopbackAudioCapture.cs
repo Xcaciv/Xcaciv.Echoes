@@ -22,6 +22,7 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
     [ThreadStatic] private static bool inCallback;
 
     public event EventHandler<AudioChunkEventArgs>? AudioChunkCaptured;
+    public event EventHandler<AudioCaptureFailedEventArgs>? CaptureFailed;
     public Exception? LastError { get; private set; }
 
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -38,7 +39,7 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             capture.RecordingStopped += (_, args) =>
             {
                 if (args.Exception is not null)
-                    LastError = args.Exception;
+                    ReportFailure(session, args.Exception);
                 session.Stopped.TrySetResult();
             };
             active = session;
@@ -46,6 +47,7 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             try
             {
                 ValidateFormat(capture.WaveFormat);
+                cancellationToken.ThrowIfCancellationRequested();
                 capture.StartRecording();
                 session.Cancellation = cancellationToken.Register(RequestStopOnCancellation);
             }
@@ -68,7 +70,8 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
             var session = active;
             if (session.StopTask is not null)
                 return session.StopTask;
-            session.Capture.StopRecording();
+            if (!session.Stopped.Task.IsCompleted && Interlocked.Exchange(ref session.StopRequested, 1) == 0)
+                session.Capture.StopRecording();
             // Never dispose a cancellation registration while holding gate: its callback
             // may itself be waiting to enter StopAsync.
             return session.StopTask = Task.Run(() => FinishStopAsync(session));
@@ -210,12 +213,31 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
         }
         catch (Exception error)
         {
-            LastError = error;
-            session.Capture.StopRecording();
+            ReportFailure(session, error);
+            if (Interlocked.Exchange(ref session.StopRequested, 1) == 0)
+                session.Capture.StopRecording();
         }
         finally
         {
             inCallback = false;
+        }
+    }
+
+    private void ReportFailure(Session session, Exception error)
+    {
+        LastError = error;
+        if (Interlocked.Exchange(ref session.FailureReported, 1) != 0)
+            return;
+        var handlers = CaptureFailed;
+        if (handlers is null)
+            return;
+        var args = new AudioCaptureFailedEventArgs(error);
+        foreach (EventHandler<AudioCaptureFailedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try { handler(this, args); }
+            catch (Exception handlerError) when (handlerError is not (OutOfMemoryException or AccessViolationException))
+            {
+            }
         }
     }
 
@@ -239,5 +261,7 @@ public sealed class WasapiLoopbackAudioCapture : IAudioCapture, IDisposable, IAs
         public TaskCompletionSource Stopped { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public CancellationTokenRegistration Cancellation { get; set; }
         public Task? StopTask { get; set; }
+        public int FailureReported;
+        public int StopRequested;
     }
 }
