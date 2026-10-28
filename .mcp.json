@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cwm-roslyn-navigator": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["tool", "run", "cwm-roslyn-navigator", "--", "--solution", "src/Xcaciv.Echos.sln"]
+    }
+  }
+}
