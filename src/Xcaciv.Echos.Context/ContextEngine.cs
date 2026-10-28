@@ -41,31 +41,33 @@ public sealed class ContextEngine : IContextEngine, IDisposable
 
     public async Task<AssistantSuggestion?> GetSuggestionAsync(CancellationToken ct = default)
     {
-        using var linked = CreateCycle(ct);
+        using var linked = CreateCycle(ct, out var revision);
         if (linked is null)
             return null;
-        var snapshot = await GatherCoreAsync(linked.Token).ConfigureAwait(false);
-        var result = await StartAuthorized(() => _llm.CompleteAsync(new LlmRequest(PromptBuilder.Build(snapshot)), linked.Token),
-            linked.Token).ConfigureAwait(false);
+        var snapshot = await GatherCoreAsync(linked.Token, revision).ConfigureAwait(false);
+        var result = await StartAuthorized(
+            () => _llm.CompleteAsync(new LlmRequest(PromptBuilder.Build(snapshot)), linked.Token),
+            linked.Token, revision).ConfigureAwait(false);
         linked.Token.ThrowIfCancellationRequested();
         return string.IsNullOrWhiteSpace(result.Text) ? null : new AssistantSuggestion("Suggestion", result.Text, null);
     }
 
     public async Task<ContextSnapshot> GatherAsync(CancellationToken cancellationToken = default)
     {
-        using var linked = CreateCycle(cancellationToken);
+        using var linked = CreateCycle(cancellationToken, out var revision);
         if (linked is null)
             return new ContextSnapshot(new UiSnapshot("", null, Array.Empty<string>()),
                 Array.Empty<AudioTranscriptSegment>(), Array.Empty<ScreenTextRegion>(), DateTimeOffset.UtcNow);
-        return await GatherCoreAsync(linked.Token).ConfigureAwait(false);
+        return await GatherCoreAsync(linked.Token, revision).ConfigureAwait(false);
     }
 
-    private CancellationTokenSource? CreateCycle(CancellationToken cancellationToken)
+    private CancellationTokenSource? CreateCycle(CancellationToken cancellationToken, out long revision)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        revision = _consent.Revision;
         CancellationTokenSource? cycle = null;
-        _consent.TryStart(false, false, () =>
+        _consent.TryStart(revision, false, false, () =>
         {
             lock (_gate)
             {
@@ -81,10 +83,10 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
-    private async Task<ContextSnapshot> GatherCoreAsync(CancellationToken token)
+    private async Task<ContextSnapshot> GatherCoreAsync(CancellationToken token, long revision)
     {
         // UI Automation is synchronous and may be slow: run it on the pool, never inside a lock.
-        var ui = await StartAuthorized(() => Task.Run(() => _inspector.GetCurrentSnapshot(), token), token)
+        var ui = await StartAuthorized(() => Task.Run(() => _inspector.GetCurrentSnapshot(), token), token, revision)
             .ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
         IReadOnlyList<ScreenTextRegion> screenText = Array.Empty<ScreenTextRegion>();
@@ -92,20 +94,22 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         {
             if (!OperatingSystem.IsWindowsVersionAtLeast(6, 1))
                 throw new PlatformNotSupportedException("Screen bitmap capture requires Windows.");
-            using var bitmap = await StartAuthorized(() => _screen.CaptureAsync(token), token, screen: true)
+            using var bitmap = await StartAuthorized(
+                    () => _screen.CaptureAsync(token), token, revision, screen: true)
                 .ConfigureAwait(false);
-            screenText = await StartAuthorized(() => _ocr.ExtractTextAsync(bitmap, token), token, screen: true)
+            screenText = await StartAuthorized(
+                    () => _ocr.ExtractTextAsync(bitmap, token), token, revision, screen: true)
                 .ConfigureAwait(false);
         }
         IReadOnlyList<AudioTranscriptSegment> transcript = Array.Empty<AudioTranscriptSegment>();
         IReadOnlyList<AudioChunkEventArgs> audioData = Array.Empty<AudioChunkEventArgs>();
         token.ThrowIfCancellationRequested();
-        _consent.TryStart(false, true, () => audioData = DrainAudio());
+        _consent.TryStart(revision, false, true, () => audioData = DrainAudio());
         try
         {
             if (audioData.Count > 0)
                 transcript = await StartAuthorized(
-                    () => _transcription.TranscribeAsync(audioData, token), token, audio: true)
+                    () => _transcription.TranscribeAsync(audioData, token), token, revision, audio: true)
                     .ConfigureAwait(false);
         }
         finally
@@ -114,17 +118,19 @@ public sealed class ContextEngine : IContextEngine, IDisposable
                 Array.Clear(chunk.Buffer);
         }
         token.ThrowIfCancellationRequested();
+        EnsureRevision(revision, token);
         return new ContextSnapshot(ui, transcript, screenText, DateTimeOffset.UtcNow);
     }
 
     // The check and the (quick) start happen atomically inside CaptureConsent.TryStart, which closes the
     // check/send revocation race. Changed is raised after consent state is updated, so anything started between
     // the update and the epoch cancel is rejected here.
-    private Task<T> StartAuthorized<T>(Func<Task<T>> start, CancellationToken token, bool screen = false, bool audio = false)
+    private Task<T> StartAuthorized<T>(Func<Task<T>> start, CancellationToken token, long revision,
+        bool screen = false, bool audio = false)
     {
         token.ThrowIfCancellationRequested();
         Task<T>? started = null;
-        var authorized = _consent.TryStart(screen, audio, () =>
+        var authorized = _consent.TryStart(revision, screen, audio, () =>
         {
             token.ThrowIfCancellationRequested();
             ThrowIfDisposed();
@@ -133,6 +139,12 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         if (!authorized)
             throw new OperationCanceledException("Capture consent was revoked.", token);
         return started!;
+    }
+
+    private void EnsureRevision(long revision, CancellationToken token)
+    {
+        if (!_consent.TryStart(revision, false, false, static () => { }))
+            throw new OperationCanceledException("Capture consent changed.", token);
     }
 
     private void OnAudioChunk(object? sender, AudioChunkEventArgs chunk)
@@ -174,9 +186,7 @@ public sealed class ContextEngine : IContextEngine, IDisposable
         {
             var result = _chunks.Select(chunk =>
                 new AudioChunkEventArgs(chunk.Buffer, chunk.SampleRate, chunk.Channels)).ToArray();
-            // Buffers are now owned by the caller; drop references without clearing them.
-            _chunks.Clear();
-            _bufferBytes = 0;
+            ClearAudio();
             return result;
         }
     }
@@ -199,8 +209,7 @@ public sealed class ContextEngine : IContextEngine, IDisposable
             previous = _epoch;
             _epoch = new CancellationTokenSource();
             _generation++;
-            if (!flags.Observation || !flags.Audio)
-                ClearAudio();
+            ClearAudio();
         }
         // Cancel outside the lock: registered callbacks are arbitrary code.
         try { previous.Cancel(); }

@@ -10,6 +10,7 @@ public sealed class CaptureConsent
     private bool _observation;
     private bool _screen;
     private bool _audio;
+    private long _revision;
 
     /// <summary>Raised after state has been updated and the internal lock released.</summary>
     public event EventHandler? Changed;
@@ -32,6 +33,11 @@ public sealed class CaptureConsent
         set { if (Update(ref _audio, value)) OnChanged(); }
     }
 
+    public long Revision
+    {
+        get { lock (_gate) return _revision; }
+    }
+
     /// <summary>Reads all flags consistently in one step.</summary>
     public (bool Observation, bool Screen, bool Audio) GetFlags()
     {
@@ -45,11 +51,21 @@ public sealed class CaptureConsent
     /// Returns false, without invoking <paramref name="start"/>, when not authorized.
     /// </summary>
     public bool TryStart(bool needScreen, bool needAudio, Action start)
+        => TryStart(null, needScreen, needAudio, start);
+
+    /// <summary>
+    /// Atomically verifies the consent revision and requested flags before invoking <paramref name="start"/>.
+    /// </summary>
+    public bool TryStart(long expectedRevision, bool needScreen, bool needAudio, Action start)
+        => TryStart((long?)expectedRevision, needScreen, needAudio, start);
+
+    private bool TryStart(long? expectedRevision, bool needScreen, bool needAudio, Action start)
     {
         ArgumentNullException.ThrowIfNull(start);
         lock (_gate)
         {
-            if (!_observation || needScreen && !_screen || needAudio && !_audio)
+            if (expectedRevision.HasValue && expectedRevision.Value != _revision ||
+                !_observation || needScreen && !_screen || needAudio && !_audio)
                 return false;
             start();
             return true;
@@ -62,6 +78,7 @@ public sealed class CaptureConsent
         {
             if (field == value) return false;
             field = value;
+            _revision++;
             return true;
         }
     }

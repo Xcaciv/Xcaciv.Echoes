@@ -70,6 +70,78 @@ public sealed class ContextEngineTests
     }
 
     [Fact]
+    public async Task ConsentRevisionPreventsSendingWhileRevocationNotificationIsDelayed()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true, IsAudioEnabled = true };
+        using var inspected = new ManualResetEventSlim();
+        using var releaseInspection = new ManualResetEventSlim();
+        using var revocationEntered = new ManualResetEventSlim();
+        using var releaseRevocation = new ManualResetEventSlim();
+        consent.Changed += (_, _) =>
+        {
+            if (!consent.IsAudioEnabled)
+            {
+                revocationEntered.Set();
+                releaseRevocation.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+        sources.Snapshot = () =>
+        {
+            inspected.Set();
+            releaseInspection.Wait(TimeSpan.FromSeconds(10));
+            return new UiSnapshot("app", "window", Array.Empty<string>());
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(inspected.Wait(TimeSpan.FromSeconds(5)));
+        var revocation = Task.Run(() => consent.IsAudioEnabled = false);
+        Assert.True(revocationEntered.Wait(TimeSpan.FromSeconds(5)));
+        releaseInspection.Set();
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+            Assert.Equal(0, sources.Completions);
+        }
+        finally
+        {
+            releaseRevocation.Set();
+            await revocation;
+        }
+    }
+
+    [Fact]
+    public async Task ReenableDuringDelayedRevocationStillClearsBufferedAudio()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true, IsAudioEnabled = true };
+        using var revocationEntered = new ManualResetEventSlim();
+        using var releaseRevocation = new ManualResetEventSlim();
+        consent.Changed += (_, _) =>
+        {
+            if (!consent.IsAudioEnabled)
+            {
+                revocationEntered.Set();
+                releaseRevocation.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+        using var engine = Create(sources, consent);
+        sources.Emit(new byte[] { 1, 2 });
+        var revocation = Task.Run(() => consent.IsAudioEnabled = false);
+        Assert.True(revocationEntered.Wait(TimeSpan.FromSeconds(5)));
+        consent.IsAudioEnabled = true;
+        try
+        {
+            Assert.Equal(0, engine.BufferedAudioBytes);
+        }
+        finally
+        {
+            releaseRevocation.Set();
+            await revocation;
+        }
+    }
+
+    [Fact]
     public async Task RevokingConsentDuringInspectionPreventsLaterNetworkCalls()
     {
         var sources = new ContextSources();
