@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Xcaciv.Echos.Tests\StubHttpMessageHandler.cs" Link="StubHttpMessageHandler.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Xcaciv.Echos.Core/Xcaciv.Echos.Core.csproj" />
+    <ProjectReference Include="../../src/Xcaciv.Echos.Context/Xcaciv.Echos.Context.csproj" />
+    <ProjectReference Include="../../src/Xcaciv.Echos.Capture/Xcaciv.Echos.Capture.csproj" />
+    <ProjectReference Include="../../src/Xcaciv.Echos.Llm/Xcaciv.Echos.Llm.csproj" />
+  </ItemGroup>
+
+  <!-- Process-level tests launch the real app. The Windows App Runtime is bundled so the exe also
+       starts on machines whose installed runtime is older than the SDK requires. -->
+  <Target Name="BuildEchosAppForEndToEnd" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT' And '$(BuildEchosApp)' != 'false'">
+    <PropertyGroup>
+      <_EchosAppProject>..\..\src\Xcaciv.Echos.App\Xcaciv.Echos.App.csproj</_EchosAppProject>
+      <_EchosAppProperties>Configuration=$(Configuration);Platform=x64;RuntimeIdentifier=win-x64;SelfContained=false;WindowsAppSDKSelfContained=true</_EchosAppProperties>
+    </PropertyGroup>
+    <!-- Restore explicitly: "dotnet test" on this project alone restores only its own references. The session id
+         forces a separate evaluation so the restore-generated props are picked up by the build below. -->
+    <MSBuild Projects="$(_EchosAppProject)" Targets="Restore" Properties="$(_EchosAppProperties);MSBuildRestoreSessionId=$([System.Guid]::NewGuid())" />
+    <MSBuild Projects="$(_EchosAppProject)" Targets="Build" Properties="$(_EchosAppProperties)">
+      <Output TaskParameter="TargetOutputs" ItemName="EchosAppAssembly" />
+    </MSBuild>
+    <WriteLinesToFile File="$(OutDir)EchosApp.path" Lines="@(EchosAppAssembly->'%(RootDir)%(Directory)Xcaciv.Echos.App.exe')" Overwrite="true" />
+  </Target>
+
+  <!-- Skipping the app build must not leave a stale path that silently runs an old executable. -->
+  <Target Name="RemoveStaleEchosAppPath" AfterTargets="Build" Condition="'$(BuildEchosApp)' == 'false'">
+    <Delete Files="$(OutDir)EchosApp.path" />
+  </Target>
+
+</Project>
