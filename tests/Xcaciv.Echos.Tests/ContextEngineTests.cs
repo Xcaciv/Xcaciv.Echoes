@@ -70,6 +70,78 @@ public sealed class ContextEngineTests
     }
 
     [Fact]
+    public async Task ConsentRevisionPreventsSendingWhileRevocationNotificationIsDelayed()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true, IsAudioEnabled = true };
+        using var inspected = new ManualResetEventSlim();
+        using var releaseInspection = new ManualResetEventSlim();
+        using var revocationEntered = new ManualResetEventSlim();
+        using var releaseRevocation = new ManualResetEventSlim();
+        consent.Changed += (_, _) =>
+        {
+            if (!consent.IsAudioEnabled)
+            {
+                revocationEntered.Set();
+                releaseRevocation.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+        sources.Snapshot = () =>
+        {
+            inspected.Set();
+            releaseInspection.Wait(TimeSpan.FromSeconds(10));
+            return new UiSnapshot("app", "window", Array.Empty<string>());
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(inspected.Wait(TimeSpan.FromSeconds(5)));
+        var revocation = Task.Run(() => consent.IsAudioEnabled = false);
+        Assert.True(revocationEntered.Wait(TimeSpan.FromSeconds(5)));
+        releaseInspection.Set();
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+            Assert.Equal(0, sources.Completions);
+        }
+        finally
+        {
+            releaseRevocation.Set();
+            await revocation;
+        }
+    }
+
+    [Fact]
+    public async Task ReenableDuringDelayedRevocationStillClearsBufferedAudio()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true, IsAudioEnabled = true };
+        using var revocationEntered = new ManualResetEventSlim();
+        using var releaseRevocation = new ManualResetEventSlim();
+        consent.Changed += (_, _) =>
+        {
+            if (!consent.IsAudioEnabled)
+            {
+                revocationEntered.Set();
+                releaseRevocation.Wait(TimeSpan.FromSeconds(10));
+            }
+        };
+        using var engine = Create(sources, consent);
+        sources.Emit(new byte[] { 1, 2 });
+        var revocation = Task.Run(() => consent.IsAudioEnabled = false);
+        Assert.True(revocationEntered.Wait(TimeSpan.FromSeconds(5)));
+        consent.IsAudioEnabled = true;
+        try
+        {
+            Assert.Equal(0, engine.BufferedAudioBytes);
+        }
+        finally
+        {
+            releaseRevocation.Set();
+            await revocation;
+        }
+    }
+
+    [Fact]
     public async Task RevokingConsentDuringInspectionPreventsLaterNetworkCalls()
     {
         var sources = new ContextSources();
@@ -83,6 +155,34 @@ public sealed class ContextEngineTests
         sources.Emit(new byte[] { 1, 2 });
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.GetSuggestionAsync());
         Assert.Equal(0, sources.Transcriptions + sources.Completions);
+    }
+
+    [Fact]
+    public async Task TogglingConsentWhileInspectorIsBlockedDoesNotDeadlock()
+    {
+        var sources = new ContextSources();
+        var consent = new CaptureConsent { IsObservationEnabled = true };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        sources.Snapshot = () =>
+        {
+            entered.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+            return new UiSnapshot("app", "window", Array.Empty<string>());
+        };
+        using var engine = Create(sources, consent);
+        var pending = engine.GetSuggestionAsync();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var toggle = Task.Run(() =>
+        {
+            consent.IsAudioEnabled = true;
+            consent.IsObservationEnabled = false;
+        });
+        var finished = await Task.WhenAny(toggle, Task.Delay(TimeSpan.FromSeconds(5))) == toggle;
+        release.Set();
+        Assert.True(finished, "Consent toggle was blocked by the inspector call.");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Equal(0, sources.Completions);
     }
 
     [Fact]

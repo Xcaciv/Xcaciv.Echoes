@@ -3,7 +3,7 @@ using Microsoft.UI.Xaml;
 
 namespace Xcaciv.Echos.App;
 
-public partial class App : Application
+public sealed partial class App : Application
 {
     private ServiceProvider? services;
     private MainWindow? window;

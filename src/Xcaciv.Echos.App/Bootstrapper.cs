@@ -16,9 +16,9 @@ public static class Bootstrapper
         services.AddSingleton(configuration.Llm);
         services.AddSingleton(configuration.Transcription);
         services.AddSingleton<CaptureConsent>();
-        services.AddHttpClient("llm", client => client.Timeout = TimeSpan.FromSeconds(45))
+        services.AddHttpClient("llm", client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-        services.AddHttpClient("transcription", client => client.Timeout = TimeSpan.FromSeconds(45))
+        services.AddHttpClient("transcription", client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddSingleton<EndpointClients>();
         services.AddSingleton<IScreenCapture, DxgiScreenCapture>();

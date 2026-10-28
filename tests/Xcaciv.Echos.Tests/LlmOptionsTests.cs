@@ -25,6 +25,30 @@ public sealed class LlmOptionsTests
             new LlmOptions { Endpoint = new Uri(endpoint), Model = "test" }.Validate());
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(601)]
+    public void RejectsInvalidRequestTimeout(int seconds)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new LlmOptions
+        {
+            Endpoint = new Uri("https://example.invalid/"),
+            Model = "test",
+            RequestTimeout = TimeSpan.FromSeconds(seconds)
+        }.Validate());
+    }
+
+    [Fact]
+    public void AcceptsDefaultAndMaximumRequestTimeout()
+    {
+        var options = new LlmOptions { Endpoint = new Uri("https://example.invalid/"), Model = "test" };
+        Assert.Equal(TimeSpan.FromSeconds(45), options.RequestTimeout);
+        options.Validate();
+        options.RequestTimeout = TimeSpan.FromMinutes(10);
+        options.Validate();
+    }
+
     [Fact]
     public void RequiresExplicitEndpointAndModel()
     {

@@ -99,14 +99,16 @@ public sealed class UiAutomationInspector : IUiInspector
                     }
                     catch (Exception error) when (IsProviderError(error))
                     {
-                        // Providers may disappear or deny access while a window is changing.
+                        // Providers may disappear or deny access while a window is changing; skip this element.
+                        // Note: a failed element is indistinguishable from an empty one in the snapshot.
                     }
                 }
             }
         }
         catch (Exception error) when (IsProviderError(error))
         {
-            // Return the native foreground metadata when UI Automation is unavailable.
+            // Return the native foreground metadata when UI Automation is unavailable. Note: this
+            // "inspection failed" case is indistinguishable from "window has no visible text" to callers.
         }
         return texts.ToArray();
     }

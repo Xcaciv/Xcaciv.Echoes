@@ -35,11 +35,15 @@ public sealed class AppConfiguration
         {
             HasLlmConfiguration = false;
         }
-        HasTranscriptionConfiguration = Transcription.Endpoint is not null
-            && !string.IsNullOrWhiteSpace(Transcription.Model)
-            && Transcription.Model.Length <= 200
-            && Transcription.ApiKey?.Contains('\r') != true
-            && Transcription.ApiKey?.Contains('\n') != true;
+        try
+        {
+            Transcription.Validate();
+            HasTranscriptionConfiguration = true;
+        }
+        catch (ArgumentException)
+        {
+            HasTranscriptionConfiguration = false;
+        }
     }
 
     public string Disclosure =>
