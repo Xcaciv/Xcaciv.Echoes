@@ -130,34 +130,44 @@ internal sealed class WindowAffordances : IDisposable
 
     private delegate nint SubclassProc(nint hwnd, uint message, nuint wParam, nint lParam, nuint id, nuint data);
 
-    [DllImport("comctl32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowSubclass(nint hwnd, SubclassProc callback, nuint id, nuint data);
-    [DllImport("comctl32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool RemoveWindowSubclass(nint hwnd, SubclassProc callback, nuint id);
     [DllImport("comctl32.dll")]
     private static extern nint DefSubclassProc(nint hwnd, uint message, nuint wParam, nint lParam);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(nint hwnd);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool UnregisterHotKey(nint hwnd, int id);
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool Shell_NotifyIcon(uint message, ref NotifyIconData data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern nint LoadIcon(nint instance, nint name);
     [DllImport("user32.dll")]
     private static extern nint CreatePopupMenu();
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool AppendMenu(nint menu, uint flags, nuint id, string text);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetCursorPos(out Point point);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(nint hwnd);
     [DllImport("user32.dll")]
     private static extern uint TrackPopupMenu(nint menu, uint flags, int x, int y, int reserved, nint hwnd, nint rect);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyMenu(nint menu);
-    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(nint hwnd, uint message, nuint wParam, nint lParam);
 }
