@@ -1,4 +1,6 @@
+using System.Drawing;
 using System.Windows.Automation;
+using System.Windows.Forms;
 using Xcaciv.Echos.Context;
 
 namespace Xcaciv.Echos.EndToEnd.Tests;
@@ -86,11 +88,22 @@ public sealed class AppTests
         await app.WaitForMainWindowAsync(WindowTimeout);
         var window = app.MainWindowHandle;
 
-        // Created after the app window and placed to its right, so the large label is on screen and not covered
-        // by the always-on-top app window. It sits at the top of the screen because PromptBuilder keeps only the first
-        // MaximumScreenRegions OCR regions, so a label lower down could be cut from the prompt on a busy desktop.
-        var appRight = (int)AutomationElement.FromHandle(window).Current.BoundingRectangle.Right;
-        using var target = new ForegroundTestWindow("ECHOS OCR TARGET", new System.Drawing.Point(appRight + 20, 0));
+        // The app captures the primary display, so both windows are arranged on it: the app in the bottom-right corner of
+        // the work area and the OCR target in the top-left corner, where its label is the first text OCR reads
+        // (PromptBuilder keeps only the first MaximumScreenRegions regions). Geometry uses Screen, GetWindowRect and
+        // SetWindowPos, which share one coordinate space in this process; UIA's BoundingRectangle is in physical pixels.
+        var primary = Screen.PrimaryScreen ?? throw new InvalidOperationException("No primary display is available.");
+        var appBounds = AppAutomation.GetWindowBounds(window);
+        var workArea = primary.WorkingArea;
+        AppAutomation.MoveWindow(window, new Point(
+            Math.Max(workArea.Left, workArea.Right - appBounds.Width),
+            Math.Max(workArea.Top, workArea.Bottom - appBounds.Height)));
+        appBounds = AppAutomation.GetWindowBounds(window);
+
+        using var target = new ForegroundTestWindow("ECHOS OCR TARGET", primary.Bounds.Location);
+        var targetBounds = AppAutomation.GetWindowBounds(target.Handle);
+        Assert.True(primary.Bounds.Contains(targetBounds), "The OCR target window does not fit on the primary display.");
+        Assert.True(!targetBounds.IntersectsWith(appBounds), "The primary display is too small to show the app and the OCR target side by side.");
         target.BringToForeground();
 
         AppAutomation.Toggle(AppAutomation.Find(window, "ScreenToggle", FindTimeout));
@@ -138,7 +151,8 @@ public sealed class AppTests
         Assert.True(AppAutomation.IsEnabled(hideButton), "The Hide button is disabled: the hotkey and tray icon are unavailable, probably because another Echos instance is running.");
         AppAutomation.Invoke(hideButton);
         await AppAutomation.WaitForHiddenAsync(window, TimeSpan.FromSeconds(5));
-        await server.WaitForRequestsAsync(2, RequestTimeout);
+        var hiddenAt = server.RequestCount;
+        await server.WaitForRequestsAsync(hiddenAt + 1, RequestTimeout);
         // The hidden window cannot receive CloseMainWindow, so Dispose() kills the process.
     }
 

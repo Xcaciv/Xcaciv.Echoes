@@ -9,8 +9,8 @@ public sealed class OcrFactAttribute : FactAttribute
             return;
         try
         {
-            if (Windows.Media.Ocr.OcrEngine.AvailableRecognizerLanguages.Count == 0)
-                Skip = "No Windows OCR recognizer language is installed.";
+            if (Windows.Media.Ocr.OcrEngine.TryCreateFromUserProfileLanguages() is null)
+                Skip = "No Windows OCR language matches the user's profile languages.";
         }
         catch (Exception error)
         {

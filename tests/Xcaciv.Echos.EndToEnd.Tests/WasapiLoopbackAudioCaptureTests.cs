@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using Xcaciv.Echos.Capture;
-using Xcaciv.Echos.Core;
 
 namespace Xcaciv.Echos.EndToEnd.Tests;
 
@@ -31,8 +30,9 @@ public sealed class WasapiLoopbackAudioCaptureTests
     public async Task ChunksArePcm16AndFrameAligned()
     {
         using var capture = new WasapiLoopbackAudioCapture();
-        var chunks = new ConcurrentQueue<AudioChunkEventArgs>();
-        capture.AudioChunkCaptured += (_, args) => chunks.Enqueue(args);
+        var chunks = new ConcurrentQueue<(int Length, int SampleRate, int Channels)>();
+        // Only metadata is kept: the samples are real system audio and must not outlive the callback.
+        capture.AudioChunkCaptured += (_, args) => chunks.Enqueue((args.Buffer.Length, args.SampleRate, args.Channels));
         await capture.StartAsync();
         try
         {
@@ -52,8 +52,8 @@ public sealed class WasapiLoopbackAudioCaptureTests
         Assert.NotEmpty(chunks);
         foreach (var chunk in chunks)
         {
-            Assert.True(chunk.Buffer.Length > 0, "A chunk was empty.");
-            Assert.True(chunk.Buffer.Length % (2 * chunk.Channels) == 0, "A chunk was not frame aligned.");
+            Assert.True(chunk.Length > 0, "A chunk was empty.");
+            Assert.True(chunk.Length % (2 * chunk.Channels) == 0, "A chunk was not frame aligned.");
             Assert.InRange(chunk.SampleRate, 8000, 384000);
             Assert.InRange(chunk.Channels, 1, 8);
         }

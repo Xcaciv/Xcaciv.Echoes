@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Automation;
 
@@ -60,7 +61,33 @@ internal static class AppAutomation
         }
     }
 
+    public static Rectangle GetWindowBounds(IntPtr window)
+    {
+        if (!GetWindowRect(window, out var rect))
+            throw new InvalidOperationException("GetWindowRect failed.");
+        return Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+    }
+
+    public static void MoveWindow(IntPtr window, Point location)
+    {
+        const uint flags = SwpNoSize | SwpNoZOrder | SwpNoActivate;
+        if (!SetWindowPos(window, IntPtr.Zero, location.X, location.Y, 0, 0, flags))
+            throw new InvalidOperationException("SetWindowPos failed.");
+    }
+
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoZOrder = 0x0004;
+    private const uint SwpNoActivate = 0x0010;
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 }
