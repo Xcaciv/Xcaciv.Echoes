@@ -59,6 +59,17 @@ Protected desktops, elevated windows, DRM-protected content, and inaccessible
 automation trees may not expose capturable content. Report source failures
 without persisting captured data.
 
+`tests/Xcaciv.Echos.EndToEnd.Tests` automates part of the desktop checks on an
+interactive Windows session: the real UI Automation, screen capture, OCR and
+loopback-audio adapters against a test window; the `ContextEngine` pipeline with real
+adapters and a stubbed LLM transport; and the launched app process against a loopback
+HTTP endpoint. Of the smoke test below it covers steps 1 and 3 fully, and in part steps
+2 (request counts, not device state), 4 (screen OCR only; audio inside the app is not
+exercised), 5 (observation and screen revocation during a pending request; audio stop
+is not checked), 6 (hiding keeps observation running) and 7 (the process exits with a
+request pending; audio and tray release are not checked). Dragging, always-on-top,
+the tray icon, the hotkey toggle and every audio path inside the app stay manual.
+
 The initial `DxgiScreenCapture` adapter retains the blueprint's public name but
 uses GDI `CopyFromScreen` as a compatibility backend, **not** DXGI Desktop
 Duplication. It captures the primary display by default; virtual-desktop capture
@@ -68,6 +79,9 @@ Whisper transcription uses a configured HTTP endpoint; no local Whisper model
 is bundled.
 
 ### Windows smoke test
+
+The end-to-end tests cover steps 1 and 3 and parts of the rest (see above); run the
+whole list by hand before a release.
 
 1. Launch with no endpoint configured: the window should explain configuration,
    and observation must remain off.

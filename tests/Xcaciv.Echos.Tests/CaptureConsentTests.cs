@@ -34,8 +34,11 @@ public sealed class CaptureConsentTests
         var otherThreadFinished = false;
         consent.Changed += (_, _) =>
         {
+            // Deliberate bounded block inside the handler: it proves Changed is raised without the lock held.
+#pragma warning disable xUnit1031
             if (consent.IsObservationEnabled && !consent.IsScreenEnabled)
                 otherThreadFinished = Task.Run(() => consent.IsScreenEnabled = true).Wait(TimeSpan.FromSeconds(5));
+#pragma warning restore xUnit1031
         };
         consent.IsObservationEnabled = true;
         Assert.True(otherThreadFinished);

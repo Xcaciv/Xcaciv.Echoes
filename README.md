@@ -11,7 +11,11 @@ privacy boundaries, and implementation notes.
 
 - Windows 10 version 2004 (build 19041) or later, with a .NET 8 SDK and the
   Windows App SDK/WinUI development prerequisites, is required for the desktop app.
-- The unpackaged app requires the Windows App Runtime 1.8.
+- The unpackaged app requires the Windows App Runtime 1.8. If the installed runtime is
+  older than the SDK package requires, the app shows "This application could not be
+  started"; build it with `-p:RuntimeIdentifier=win-x64 -p:SelfContained=false
+  -p:WindowsAppSDKSelfContained=true` to bundle the runtime instead (the end-to-end
+  tests build it that way).
 - C# is pinned to version 10 in `Directory.Build.props`.
 - The platform-independent Core, Context, and Llm projects can be built on Linux.
   Windows capture and WinUI must be exercised on a Windows desktop.
@@ -33,6 +37,27 @@ Run the portable context/HTTP tests (also supported on Linux):
 
 ```shell
 dotnet test tests/Xcaciv.Echos.Tests/Xcaciv.Echos.Tests.csproj
+```
+
+Run everything, including the Windows end-to-end suite, on an interactive Windows
+desktop:
+
+```shell
+dotnet test src/Xcaciv.Echos.sln
+```
+
+`tests/Xcaciv.Echos.EndToEnd.Tests` exercises the real UI Automation, screen capture,
+OCR and loopback-audio adapters, runs the suggestion pipeline against a stubbed LLM
+transport, and launches the built app against a loopback HTTP listener to confirm that
+nothing is sent before opt-in, that one bounded request follows opt-in, that revoking
+consent stops further requests, and that the process exits while a request is pending.
+Those tests take over the foreground window for about a minute, launch the app, OCR
+the real screen and play a short tone through the default audio device; they skip
+themselves when no OCR language or audio render device is installed. To run only the
+portable and adapter suites:
+
+```shell
+dotnet test src/Xcaciv.Echos.sln --filter "FullyQualifiedName!~EndToEnd"
 ```
 
 ## Endpoint configuration

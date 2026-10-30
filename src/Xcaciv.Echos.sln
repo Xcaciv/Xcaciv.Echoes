@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Xcaciv.Echos.Tests", "..\te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Xcaciv.Echos.Capture.Tests", "..\tests\Xcaciv.Echos.Capture.Tests\Xcaciv.Echos.Capture.Tests.csproj", "{A1A102D4-495F-4B86-BE36-7E3842620EB9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Xcaciv.Echos.EndToEnd.Tests", "..\tests\Xcaciv.Echos.EndToEnd.Tests\Xcaciv.Echos.EndToEnd.Tests.csproj", "{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -111,6 +113,18 @@ Global
 		{A1A102D4-495F-4B86-BE36-7E3842620EB9}.Release|x64.Build.0 = Release|Any CPU
 		{A1A102D4-495F-4B86-BE36-7E3842620EB9}.Release|x86.ActiveCfg = Release|Any CPU
 		{A1A102D4-495F-4B86-BE36-7E3842620EB9}.Release|x86.Build.0 = Release|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Debug|x64.Build.0 = Debug|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Debug|x86.Build.0 = Debug|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Release|x64.ActiveCfg = Release|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Release|x64.Build.0 = Release|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Release|x86.ActiveCfg = Release|Any CPU
+		{D6F972D4-8D6D-40E4-9E0F-75D1F0170874}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

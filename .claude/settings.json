@@ -1,6 +1,13 @@
 {
   "enabledPlugins": {
-    "dotnet-claude-kit@dotnet-claude-kit": true
+    "dotnet-claude-kit@dotnet-claude-kit": true,
+    "dotnet@dotnet-agent-skills": true,
+    "dotnet-advanced@dotnet-agent-skills": true,
+    "context7@anthropic-plugin-directory": true,
+    "dotnet-msbuild@dotnet-agent-skills": true,
+    "dotnet-test@dotnet-agent-skills": true,
+    "code-simplifier@anthropic-plugin-directory": true,
+    "dotnet-diag@dotnet-agent-skills": true
   },
   "extraKnownMarketplaces": {
     "dotnet-claude-kit": {
